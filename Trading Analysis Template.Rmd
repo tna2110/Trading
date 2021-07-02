@@ -1,0 +1,913 @@
+---
+author: "Tanzeel Ahmed"
+output: html_document
+---
+## T3 Trading Group - Tanzeel Ahmed Statistics
+
+```{r setup, echo = FALSE, message=FALSE, warning=FALSE, include=FALSE}
+notebook_start_time=Sys.time()
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The purpose of this document is to gain insight from my career as a proprietary equities trader. I want to understand which technical indicators, execution strategies, stock characteristics, and market conditions give me the best edges when placing a trade. I want to optimize trades that have higher probabilities of success with trades that have higher reward to risk ratios. I also want to see how to enter trades to best improve my cost basis and improve reward-to-risk ratios without significantly weakening my win rate.
+
+First, let's install the necessary packages to execute the necessary code in this file in case they are not installed already.
+
+```{r Install Packages if not already installed, include=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+necessary_packages_vec=c("readxl","dplyr","chron","ggplot2","tidyr","quantmod","TTR","plotly","xts","rpart","rpart.plot","tree","randomForest","class","googlesheets","googlesheets4")
+
+package_is_installed_vec=c()
+package_is_not_installed_vec=c()
+
+install_start_time=Sys.time()
+
+for(i in 1:length(necessary_packages_vec)){
+  if(necessary_packages_vec[i] %in% rownames(installed.packages())==FALSE){
+    install.packages(necessary_packages_vec[i], repos = "http://cran.us.r-project.org", dependencies = TRUE, INSTALL_opts = '--no-lock')
+    package_is_installed_vec=c(package_is_installed_vec,TRUE)
+  }else{
+    necessary_packages_vec[i]=necessary_packages_vec[i]
+  }
+}
+
+if(length(package_is_not_installed_vec)>0){
+  install_end_time=Sys.time()
+  install_execution_time=difftime(install_end_time,install_start_time,units="secs")
+  install_execution_time=round(as.numeric(install_execution_time),2)
+}else{
+  install_execution_time=0
+}
+```
+
+
+```{r Load Packages, include=FALSE, echo=FALSE, message=FALSE, warning=FALSE}
+library(readxl)
+library(dplyr)
+library(chron)
+library(ggplot2)
+library(tidyr)
+library(quantmod)
+library(TTR)
+library(plotly)
+library(xts)
+library(rpart)
+library(rpart.plot)
+library(tree)
+library(randomForest)
+library(googlesheets)
+library(googlesheets4)
+```
+
+
+I then imported the trading statistics from T3 Trading Group and numbered every trade from my overall career in 2020.  
+
+I'm choosing not to include data from my 2017 career since I was a beginner and made mostly unmethodical mistakes. Now that I've had to time to learn the basics of technical analysis and candlestick patterns, I can better determine the patterns associated with successful trades in the context of what the stock and the market is doing at the time.  
+
+The Trade ID will be the primary field while each row of the master trades data frame will serve as a tuple for each trade.
+
+```{r Download Trading Data, echo=FALSE, message=FALSE, warning=FALSE}
+
+#Establish File Paths. Make sure the Excel workbook is saved in an xlsx format.
+master_trades_file_path="~/Trading/T3 Trading Group/Data Analytics/All Trades - 2020 Career Start.xlsx"
+
+master_trades <- read_excel(master_trades_file_path,sheet="Trades")
+today=Sys.Date()
+
+#Determine the career Trade ID
+trade_id=c()
+for(i in 1:nrow(master_trades)){
+  trade_id=c(trade_id,i)
+}
+
+#Googlesheets 4 Authorizations and Import Current Swing Trades
+gs4_auth(email="tanzeelahmed23@gmail.com")
+
+current_swing_non_dividend_df=read_sheet("https://docs.google.com/spreadsheets/d/14sy0T93KGsGtwDxetwKrg11EvZPAvCdKDChnUY3Hlsk/edit#gid=0", sheet="Non-Dividend")
+
+current_swing_dividend_penny_df=read_sheet("https://docs.google.com/spreadsheets/d/14sy0T93KGsGtwDxetwKrg11EvZPAvCdKDChnUY3Hlsk/edit#gid=0", sheet="Dividends and Pennies")
+
+
+
+```
+ 
+I then created a section of this notebook for me to enter my user inputs for technical indicators and research.  
+
+I will remove IPO trades or trades in any recent IPOs from my data analytics because they don't have enough history to provide the technical indicators I research. I also created a separate data frame specifically detailing my swing trades. They will share the same primary key, trade_id, as the master_trades table. This table will also detail the number of calendar days a stock was held for a swing.
+
+```{r User Inputs, echo=FALSE, message=FALSE, warning=FALSE}
+#Label which traded symbols were recent IPOs or unimportable.
+unimportable_symbols=c("WMG","LK")
+
+#Choose when you're going to start evaluating your trades. I'm choosing not to look at trades I made during my 2017 career.
+career_start_date=as.Date("2020-03-01")
+look_forward_days=10
+lookback_days=200
+lookback_start=today-lookback_days
+
+#Set the parameters of your moving averages
+short_sma_no=10
+medium_sma_no=20
+long_sma_no=50
+short_ema_no=8
+medium_ema_no=21
+long_ema_no=55
+max_ma_period=max(short_sma_no,medium_sma_no,long_sma_no,short_ema_no,medium_ema_no,long_ema_no)
+
+#Set the parameters for how you calculate average true range and average volume.
+atr_no=10
+vol_no=10
+
+#Set the parameters for how we'll evaluate relative strength and beta
+short_rs_no=5
+medium_rs_no=21
+long_rs_no=63
+beta_no=10
+
+#Label which trades are your swing trades and their respective durations.
+swing_info=read_excel(master_trades_file_path, sheet="Swing_Info")
+```
+
+I then cleaned up the master_trades data frame. This includes standardizing the entry and exit times and  splitting them into date and time columns.All of the trading fees can be combined into one column.    
+
+Next, let's clean up the master_trades data frame. This includes standardizing the entry and exit times and splitting them into date and time columns. All of the trading fees can be combined into one column. Using the swing trades table, I can calculate the exit dates for any swing trades I've held.  
+
+Once I do this, I can create calculated fields that aren't explicitly provided by T3 Trading Group.These calculated fields measure trade duration (one field for the number of days and one field for the number of minutes). Daily Trade ID will measure which order a trade is taken within each trading session, as defined by when the trade begins.
+
+```{r Date and Time Columns, echo=FALSE, message=FALSE, warning=FALSE}
+#Clean up entry, exit, and duration of trade data
+Entry_Time <- format(as.POSIXct(master_trades$Opened,format="%m/%d/%y %H:%M:%S"),"%H:%M:%S")
+Entry_Date <- format(as.POSIXct(master_trades$Opened,format="%m/%d/%y %H:%M:%S"),"%m/%d/%y")
+Entry_Date=as.Date(Entry_Date,format="%m/%d/%y")
+Entry_Time=chron(times=Entry_Time)
+Exit_Date=Entry_Date
+Exit_Time <- format(as.POSIXct(master_trades$Closed,format="%H:%M:%S"),"%H:%M:%S")
+Exit_Time=chron(times=Exit_Time)
+
+#Scale Entry Time and Exit Times for how many hours after the market opens at 9:30 AM
+Entry_Time=(Entry_Time*24-9.5)/24
+Exit_Time=(Exit_Time*24-9.5)/24
+  
+#Correct Exit Dates for swing trades
+for(i in 1:nrow(swing_info)){
+  Exit_Date[unlist(swing_info[i,1])]=Exit_Date[unlist(swing_info[i,1])]+unlist(swing_info[i,2])
+}
+
+#Recalculate the duration of trades in minutes
+Duration_Min=(Exit_Time-Entry_Time)*1440
+Duration_Day=Exit_Date-Entry_Date
+Duration_Day=as.numeric(Duration_Day)
+
+#Daily Trade ID, remember that I will have to remove the unimportable symbols AFTER you calculate the daily trade id.This is why I will keep the Old Entry Date without removing the unimportable symbols.
+daily_trade_id=c(1)
+n=1
+while(n<nrow(master_trades)){
+  n=n+1
+  if(Entry_Date[n]==Entry_Date[n-1]){
+    val=daily_trade_id[n-1]+1}else{
+      val=1
+    }
+  daily_trade_id=c(daily_trade_id,val)
+}
+```
+
+After combining the individual trading fee columns into one uniform value, I factored the trade type and stock symbol to create a vector that lists every stock I've traded since my 2020 career began.
+
+```{r Trading Fees and Factors, echo=FALSE, message=FALSE, warning=FALSE}
+#Clean up trading fees data by combining columns 10 through 17
+trading_fees=(master_trades[,10]+master_trades[,11]+master_trades[,12]+master_trades[,13]+master_trades[,14]+master_trades[,15]+master_trades[,16]+master_trades[,17])
+
+#Factor columns and create vector detailing every symbol I've ever traded.
+master_trades$Type=as.factor(master_trades$Type)
+master_trades$Symbol=as.factor(master_trades$Symbol)
+traded_symbols=levels(master_trades$Symbol)
+```
+
+I then cleaned the newly created master trades data frame, which includes the transformed entry and exit time and date columns, the combine trading fees calculated field, and the trade's duration measured in both days and minutes.I then removed any null values just in case. Since I decided to ignore my 2017 trading career, the symbols I'm studying haven't yet created calculation issues the way a select few names I traded in 2017 did.
+
+```{r Clean Master Trades, echo=FALSE, message=FALSE, warning=FALSE}
+#Create clean version of master trades data frame to account for expanded and scaled columns.
+master_trades_clean=data.frame(trade_id,Entry_Date,Entry_Time,Exit_Date,Exit_Time,Duration_Day,Duration_Min,master_trades[,4:9],trading_fees,master_trades[,18])
+
+#Rename Columns
+colnames(master_trades_clean)[1:7]=c("trade_id","entry_date","entry_time","exit_date","exit_time","days_held","minutes_held")
+colnames(master_trades_clean)[10:11]=c("entry_price","exit_price")
+colnames(master_trades_clean)[14]="trading_fees"
+master_trades_clean=master_trades_clean[order(master_trades_clean$entry_date,master_trades_clean$entry_time),]
+
+#Combine all the columns together.
+master_trades_clean=cbind(master_trades_clean[,1],daily_trade_id,master_trades_clean[,c(2:ncol(master_trades_clean))])
+colnames(master_trades_clean)[1]="trade_id"
+
+#For some reason, the cleaned master trades data frame still has observations of the unimportable index, but lists them as NA, so let's remove them. Also make sure to exclude the Georgia trading data.
+master_trades_clean=na.omit(master_trades_clean)
+
+#Let's make sure that I'm only looking at my 2020 trading career.
+master_trades_clean=subset(master_trades_clean,master_trades_clean$entry_date>=career_start_date)
+master_trades_clean$Symbol=as.factor(master_trades_clean$Symbol)
+traded_symbols_clean=levels(master_trades_clean$Symbol)
+```
+
+To avoid pulling too much data, I will only import Yahoo Finance data for the time period that I've traded the stock. This means, I'll only import enough data before the first time I traded a particular security up until a pre-determined amount of trading sessions AFTER the last time I traded the corresponding security. For each symbol I've traded, I've determined the values for the first and last trade dates that I will use when I import Yahoo Finance data en masse.
+
+```{r Determine First and Last Trade Dates, echo=FALSE, warning=FALSE, message=FALSE}
+#Create data frame with a clean list of symbols I've traded and their respective first and last trade dates.
+first_symbol_trade_date_vec=c()
+for(i in 1:length(traded_symbols_clean)){
+  first_symbol_trade_date=min(master_trades_clean$entry_date[master_trades_clean$Symbol==traded_symbols_clean[i]])
+  first_symbol_trade_date_vec=c(first_symbol_trade_date_vec,first_symbol_trade_date)
+}
+first_symbol_trade_date_vec=as.Date(first_symbol_trade_date_vec)
+
+last_symbol_trade_date_vec=c()
+for(i in 1:length(traded_symbols_clean)){
+  last_symbol_trade_date=max(master_trades_clean$exit_date[master_trades_clean$Symbol==traded_symbols_clean[i]])
+  last_symbol_trade_date_vec=c(last_symbol_trade_date_vec,last_symbol_trade_date)
+}
+last_symbol_trade_date_vec=as.Date(last_symbol_trade_date_vec)
+
+traded_symbol_df=data.frame(Symbol=traded_symbols_clean,First_Trade_Date=first_symbol_trade_date_vec,Last_Trade_Date=last_symbol_trade_date_vec)
+
+#Make sure recent IPOs are excluded since they can't have moving averages or other lagging indicators.
+for(i in 1:length(unimportable_symbols)){
+  traded_symbol_df=traded_symbol_df[traded_symbol_df$Symbol!=unimportable_symbols[i],]
+}
+```
+
+Using the Quantmod package, I can import Yahoo Finance as early as 2007. This will be useful for testing potential patterns later, but not useful for analyzing my own trading career since I'm a junior trader. More importantly, trading is becoming more algorithmic and computerized. I'll put extra emphasis on recent data so I can adjust my strategies with greater flexibility to changing market conditions.For me to conduct further analysis, it'll be easier if I can convert these time series objects into data frames.
+
+Unfortunately, whenever I trade a stock, I do not have the hindsight of being able to determine in real-time what a stock's high, low, and close prices are going to be. So let's take the functions and data frames I've created and apply them to the previous trading session. If I can determine common patterns with winning trades, I'll know better what to look for when I do my evening research.  
+
+```{r Download Yahoo Finance Data, echo=FALSE, warning=FALSE, message=FALSE}
+#Function converting Yahoo Finance Time Series data for all of the stocks that I've traded that are downloadable. The data is NOT adjusted for dividends and splits since most of my trades are on an intra-day timeframe. The time series objects will be converted into data frames so it will be easier for me to conduct regressions, decision trees, and random forests.
+
+xts_to_df=function(symbol_name){
+  xts=getSymbols.yahoo(Symbols=symbol_name,
+                env=globalenv(),
+                 return.class = 'xts',
+                 index.class  = 'Date',
+                 periodicity = "daily",
+                 from=career_start_date-ceiling((max_ma_period+9)*1.4),
+                 curl.options = list(),
+                 na.omit=TRUE,
+                auto.assign=FALSE)
+  xts=na.omit(xts)
+  date_vector=index(xts)
+  df=as.data.frame(xts)
+  df=cbind(date_vector,df)
+  symbol_vector=c(rep(symbol_name,nrow(df)))
+  df=cbind(symbol_vector,date_vector,df[,c(2:6)])
+  previous_day_df=c(rep(NA,5))
+  previous_day_df=rbind(previous_day_df,df[c(1:(nrow(df)-1)),c(3:7)])
+  daily_return_vec=c(NA)
+  final_df=cbind(df,previous_day_df)
+  colnames(final_df)=c("Symbol","Date","Open","High","Low","Close","Volume","Previous_Open",
+                    "Previous_High","Previous_Low","Previous_Close","Previous_Volume")
+    for(i in 2:nrow(final_df)){
+    daily_return=(final_df$Close[i]-final_df$Previous_Close[i])/final_df$Previous_Close[i]
+    daily_return_vec=c(daily_return_vec,daily_return)
+    }
+  final_df=cbind(final_df,daily_return_vec)
+  colnames(final_df)[ncol(final_df)]=c("Daily_Return")
+return(final_df)
+}
+```
+
+Now it's time to create the cleaned version of my master trades data frame. Now I can determine the order of trades within a given day as well.  
+
+I'll also have to determine the trends of the stock I am looking at. This is why it's important to give a higher lookback period before the start of my trading career so I can see what the big picture timeframe is for the stock's price action.The trend classification will extrapolate the most recent trend if a new pivot point did not occur on the most recent trading day.
+
+```{r Trend Determination Functions, echo=FALSE, warning=FALSE, message=FALSE}
+
+#Let's calculate swing points. In this function, the last row of a vector is the current day because you need the succeeding candlestick to properly determine if a candle is a swing high or swing low.
+
+swing_point_function=function(date_vec,high_vec,low_vec){
+  status_vec=c()
+  n=length(high_vec)-2
+  for(i in 3:n){
+    if(high_vec[i]>high_vec[i-2]&&high_vec[i]>high_vec[i-1]&&high_vec[i]>high_vec[i+2]&&
+       high_vec[i]>high_vec[i+1]){
+        if(low_vec[i]<low_vec[i-1]&&low_vec[i]<low_vec[i-2]&&low_vec[i]<low_vec[i+2]&&
+           low_vec[i]<low_vec[i+1]){
+          status="both"
+        }else{
+             status="high"
+           }
+       }else if(low_vec[i]<low_vec[i-1]&&low_vec[i]<low_vec[i-2]&&low_vec[i]<low_vec[i+2]&&
+           low_vec[i]<low_vec[i+1]){
+         status="low"
+       }else{
+             status="none"
+       }
+    status_vec=c(status_vec,status)
+  }
+  date_vec=date_vec[3:n]
+  low_vec=low_vec[3:n]
+  high_vec=high_vec[3:n]
+  result_df=data.frame(date_vec,status_vec,high_vec,low_vec)
+  colnames(result_df)=c("Date","Status","High","Low")
+  return(result_df)
+}
+
+#Now let's identify higher highs and higher lows as well as lower highs and lower lows
+
+low_function=function(low_df){
+  status=c()
+  for(i in 2:nrow(low_df)){
+    if(low_df[i,4]<low_df[(i-1),4]){
+      status=c(status,"Lower Low")
+    }else if(low_df[i,4]>low_df[(i-1),4]){
+      status=c(status,"Higher Low")
+    }else{
+      status=c(status,"Same Low")
+    }
+  }
+  return(status)
+}
+
+high_function=function(high_df){
+  status=c()
+  for(i in 2:nrow(high_df)){
+    if(high_df[i,3]<high_df[(i-1),3]){
+      status=c(status,"Lower High")
+    }else if(high_df[i,3]>high_df[(i-1),3]){
+      status=c(status,"Higher High")
+    }else{
+      status=c(status,"Same High")
+    }
+  }
+  return(status)
+}
+
+#Now, let's identify the trend points alongside their statuses as higher highs, higher lows, lower highs, and lower lows.
+
+trend_point_function<-function(df){
+  date=df$Date
+  high=df$High
+  low=df$Low
+  
+  #Determine the swing points
+  swing_points=swing_point_function(date,high,low)
+  
+  #Low Pivot Points
+  low_points=swing_points[swing_points[,2]=="low",]
+  low_status=low_function(low_points)
+  low_points=cbind(low_points[2:nrow(low_points),],low_status)
+  colnames(low_points)=c("Date","Status","High","Low","Direction")
+  
+  #High Pivot Points
+  high_points=swing_points[swing_points[,2]=="high",]
+  high_status=high_function(high_points)
+  high_points=cbind(high_points[2:nrow(high_points),],high_status)
+  colnames(high_points)=c("Date","Status","High","Low","Direction")
+  
+  #Combine Pivot Points
+  swing_points=rbind(low_points,high_points)
+  swing_points=swing_points[order(swing_points$Date),]
+  final_points=swing_points[1,]
+  
+  #Make sure there can't be back to back highs without lows between them or vice versa
+  for(i in 2:nrow(swing_points)){
+    if(swing_points[i,5]==swing_points[i-1,5]){
+      final_points=final_points
+    }else{
+      final_points=rbind(final_points,swing_points[i,])
+    }
+  }
+  if(is.na(final_points[nrow(final_points),1])==TRUE){
+    final_points=final_points[c(1:(nrow(final_points)-1)),]
+  }else{
+    final_points=final_points
+  }
+  return(final_points)
+}
+
+#Using the trend points, we can now determine the immediate trends.
+trend_classification_function<-function(df){
+  a=trend_point_function(df)
+  date=df$Date
+  trend=c()
+  for(i in 2:nrow(a)){
+    if(a[(i-1),5]=="Higher Low"||a[(i-1),5]=="Higher High"){
+      if(a[i,5]=="Higher Low"||a[i,5]=="Higher High"){
+        trend=c(trend,"Up")
+      }else{trend=c(trend,"Range")}
+    }else if(a[(i-1),5]=="Lower Low"||a[(i-1),5]=="Lower High"){
+      if(a[i,5]=="Lower Low"||a[i,5]=="Lower High"){
+        trend=c(trend,"Down")
+      }else{trend=c(trend,"Range")}
+    }else{trend=c(trend,"Range")}
+  }
+  
+  #Make sure all dates between the trend points are labelled with the trend.
+  j=1
+  final_trend=c()
+  for(i in 1:length(trend)){
+    while(date[j]<a[i,1]){
+      final_trend=c(final_trend,trend[i])
+      j=j+1
+    }
+  }
+  final_trend_value=final_trend[length(final_trend)]
+  first_trend_value=final_trend[1]
+  final_trend=c(first_trend_value,final_trend,rep(final_trend_value,(nrow(df)-length(final_trend)-1)))
+  previous_trend=c(NA,final_trend[1:(length(final_trend)-1)])
+  
+  #Add Current and Previous Trends to OHLC and Previous Day OHLC dataframe.
+  final_df=cbind(df,final_trend,previous_trend)
+  colnames(final_df)=c("Symbol","Date","Open","High","Low","Close","Volume","Previous_Open",
+                    "Previous_High","Previous_Low","Previous_Close","Previous_Volume","Daily_Return","Trend","Previous_Trend")
+  return(final_df)
+}
+  
+```
+
+For the purposes of intra-day trading executions, I'll use the daily swing points as support and resistance levels. I'll refer to them specifically as pivot support and pivot resistance levels. You can also specify how you want to round off these levels.
+```{r Support and Resistance, echo=FALSE, warning=FALSE, message=FALSE}
+
+pivot_sr_function=function(df,round=1){
+  sr_df=trend_point_function(df[,c(1:8)])
+  sr_df$Direction=as.character(sr_df$Direction)
+  highs=sr_df[sr_df$Status=="high",]
+  lows=sr_df[sr_df$Status=="low",]
+  highs$Direction=c(rep("Resistance",nrow(highs)))
+  lows$Direction=c(rep("Support",nrow(lows)))
+  highs=highs[,c(1,3,5)]
+  lows=lows[,c(1,4,5)]
+  resistance_vec=c()
+  resistance_date_vec=c()
+  support_vec=c()
+  support_date_vec=c()
+  for(i in 2:nrow(highs)){
+    j=df[(which(df$Date==highs[i-1,1])+1):which(df$Date==highs[i,1]),2]
+    resistance_vec=c(resistance_vec,rep(highs[i-1,2],length(j)))
+    resistance_date_vec=c(resistance_date_vec,j)
+  }
+  for(i in 2:nrow(lows)){
+    j=df[(which(df$Date==lows[i-1,1])+1):which(df$Date==lows[i,1]),2]
+    support_vec=c(support_vec,rep(lows[i-1,2],length(j)))
+    support_date_vec=c(support_date_vec,j)
+  }
+  no_support_date_vec=df$Date[1:(which(df$Date==support_date_vec[1])-1)]
+  no_resistance_date_vec=df$Date[1:(which(df$Date==resistance_date_vec[1])-1)]
+  support_vec=c(rep(NA,length(no_support_date_vec)),support_vec)
+  resistance_vec=c(rep(NA,length(no_resistance_date_vec)),resistance_vec)
+  final_support=support_vec[length(support_vec)]
+  final_resistance=resistance_vec[length(resistance_vec)]
+  support_vec=c(support_vec,rep(final_support,nrow(df)-length(support_vec)))
+  resistance_vec=c(resistance_vec,rep(final_resistance,nrow(df)-length(resistance_vec)))
+  result_df=data.frame(df$Date,support_vec,resistance_vec)
+  result_df[,2:3]=round(result_df[,2:3]*1/round,0)*round
+  colnames(result_df)=c("Date","Support","Resistance")
+  return(result_df)
+}
+
+```
+
+Next, let's establish which index I'll use to measure the underlying market and compare with individual stocks to determine relative strength, weakness, and beta.
+```{r Market Index, echo=FALSE, message=FALSE, warning=FALSE}
+
+#Let's set SPY as our general market overview.
+market_df=xts_to_df("SPY")
+market_df=trend_classification_function(market_df)
+
+#Function for evaluating the relative strength of an underlying security compared with the general market.
+relative_strength=function(df,market_df,no_days){
+  market_df=subset(market_df,market_df$Date>=df$Date[1]&market_df$Date<=df$Date[nrow(df)])
+  relative_strength_vec=c(rep(NA,no_days))
+  for(i in (no_days+1):nrow(df)){
+    overall_return=df$Close[i]/df$Close[i-no_days]-1
+    overall_market_return=market_df$Close[i]/market_df$Close[i-no_days]-1
+    relative_strength=overall_return-overall_market_return
+    relative_strength_vec=c(relative_strength_vec,relative_strength)
+  }
+  return(relative_strength_vec)
+}
+
+#Function for evaluating the relative strength of an underlying security based on the gap.There is a separate function to calculate gaps later in this document because I want to use absolute values and character classifications to specify whether or not a gap is a common gap or a breakaway gap.
+
+gap_relative_strength=function(df,market_df){
+  market_df=subset(market_df,market_df$Date>=df$Date[1]&market_df$Date<=df$Date[nrow(df)])
+  relative_strength_vec=c(rep(NA,1))
+  for(i in 2:nrow(df)){
+    gap=df$Close[i]/df$Close[i-1]-1
+    market_gap=market_df$Close[i]/market_df$Close[i-1]-1
+    relative_strength=gap-market_gap
+    relative_strength_vec=c(relative_strength_vec,relative_strength)
+  }
+  return(relative_strength_vec)
+}
+
+#Function for Determining a stock's beta relative to the general market/
+
+beta_function=function(df,market_df,no_days){
+  market_df=subset(market_df,market_df$Date>=df$Date[1]&market_df$Date<=df$Date[nrow(df)])
+  beta_vec=c(rep(NA,no_days))
+  for(i in (no_days+1):nrow(df)){
+    beta=(cov(df$Daily_Return[(i-no_days+1):i],market_df$Daily_Return[(i-no_days+1):i])/
+      var(market_df$Daily_Return[(i-no_days+1):i]))
+    beta_vec=c(beta_vec,beta)
+  }
+  return(beta_vec)
+}
+```
+
+Now let's create functions to calculate all of the wonderful technical indicators I populate my charts with when I am conducting my research. I'll need to create a function that calculates multiple simple and exponential moving averages of a security's closing price as well as their corresponding extension percentages. 
+
+Then, I created functions to calculate the average true range, average volume, and relative volume of a stock based on pre-determined number of trading sessions inclusive of the most recent trading session. These values will be used to determine the technical indicators for every stock I've every traded and every date within the lookback period and the pre-determined buffer before the start of the lookback period. 
+
+```{r Technical Indicator Functions, echo=FALSE, messsage=FALSE, warning=FALSE}
+#Let's calculate extension. This assumes that you already calculated the moving averages.
+extension_function=function(ma_vec,price_vec){
+  extension_vec=c()
+  for(i in 1:length(ma_vec)){
+    val=(price_vec[i]-ma_vec[i])/ma_vec[i]
+    extension_vec=c(extension_vec,val)
+  }
+  return(extension_vec)
+}
+
+#Let's create a dataframe that includes moving averages, moving average extensions, upper and lower Bolinger Bands vs its Short Simple Moing Average.
+
+ma_df_function=function(df,short_sma,medium_sma,long_sma,short_ema,medium_ema,long_ema){
+  short_sma_vec=SMA(df$Close,short_sma)
+  medium_sma_vec=SMA(df$Close,medium_sma)
+  long_sma_vec=SMA(df$Close,long_sma)
+  short_ema_vec=EMA(df$Close,short_ema)
+  medium_ema_vec=EMA(df$Close,medium_ema)
+  long_ema_vec=EMA(df$Close,long_ema)
+  bb_df=BBands(cbind(df$High,df$Low,df$Close),n=short_sma,maType="SMA",sd=2)
+  bb_df=bb_df[,c(1:3)]
+  colnames(bb_df)=c("Lower_Band","BBand_MA","Upper_Band")
+  ma_df=data.frame(df$Date,short_sma_vec,medium_sma_vec,long_sma_vec,short_ema_vec,
+                       medium_ema_vec,long_ema_vec,bb_df)
+  short_sma_extension=extension_function(short_sma_vec,df$Close)
+  medium_sma_extension=extension_function(medium_sma_vec,df$Close)
+  long_sma_extension=extension_function(long_sma_vec,df$Close)
+  short_ema_extension=extension_function(short_ema_vec,df$Close)
+  medium_ema_extension=extension_function(medium_ema_vec,df$Close)
+  long_ema_extension=extension_function(long_ema_vec,df$Close)
+  result_df=cbind(ma_df,short_sma_extension,medium_sma_extension,long_sma_extension,
+                  short_ema_extension,medium_ema_extension,long_ema_extension)
+  colnames(result_df)[1:7]=c("Date","Short_SMA","Medium_SMA","Long_SMA","Short_EMA","Medium_EMA",
+                        "Long_EMA")
+  return(result_df)
+}
+
+#Average True Range
+atr_function=function(df,no){
+  range_vec=abs(df$High-df$Low)
+  result_vec=c(rep(NA,no-1))
+  for(i in no:length(range_vec)){
+    val=mean(range_vec[(i-no+1):i])
+    result_vec=c(result_vec,val)
+  }
+  return(result_vec)
+}
+
+#Average Volume and RVol Dataframe
+volume_analysis_function=function(df,no){
+  avg_vol_vec=c(rep(NA,no-1))
+  rvol_vec=c(rep(NA,no-1))
+  for(i in no:nrow(df)){
+    avg_vol=mean(df$Volume[(i-no+1):i])
+    rvol=df$Volume[i]/avg_vol
+    avg_vol_vec=c(avg_vol_vec,avg_vol)
+    rvol_vec=c(rvol_vec,rvol)
+  }
+  result_df=data.frame(avg_vol_vec,rvol_vec)
+  colnames(result_df)=c("avg_vol","rvol")
+  return(result_df)
+}
+
+#Create function to calculate and classify gaps
+gap_function=function(df){
+    gap_type_vector=c(NA)
+    gap_direction_vector=c(NA)
+    gap_size_vector=c(NA)
+  for(j in 2:nrow(df)){
+    if(df$Open[j]>=df$Low[j-1]&&df$Open[j]<=df$High[j-1]){
+      gap_type="Common"
+    }else{
+      gap_type="Breakaway"
+    }
+    if(df$Open[j]>df$Close[j-1]){
+      gap_direction="Up"
+    }else if(df$Open[j]<df$Close[j-1]){
+      gap_direction="Down"
+    }else{
+      gap_direction="Flat"
+    }
+    gap_size=abs((df$Open[j]-df$Close[j-1])/df$Close[j-1])
+    gap_type_vector=c(gap_type_vector,gap_type)
+    gap_direction_vector=c(gap_direction_vector,gap_direction)
+    gap_size_vector=c(gap_size_vector,gap_size)
+  }
+    result=data.frame(gap_type_vector,gap_direction_vector,gap_size_vector)
+    colnames(result)=c("gap_type","gap_direction","gap_size")
+    return(result)
+}
+
+```
+
+I'll also determine any daily candlestick shapes and range contraction patterns to automate the calculation of daily setups.
+```{r Candle Analysis Functions, echo=FALSE}
+#Create function to calculate previous day candle shape.
+candle_shape_function=function(df){
+  candle_color_vector=c()
+  candle_type_vector=c()
+  for(i in 1:nrow(df)){
+    candle_type="Plain"
+  if(df$Close[i]>df$Open[i]){
+    color="Green"
+  }else if(df$Close[i]<df$Open[i]){
+    color="Red"
+  }else{
+    candle_type="Doji"
+    color="None"
+  }
+  body=abs(df$Open[i]-df$Close[i])
+  range=abs(df$High[i]-df$Low[i])
+  if(color=="Green"){
+    upper_tail=df$High[i]-df$Close[i]
+    lower_tail=df$Open[i]-df$Low[i]
+  }else if(color=="Red"){
+    upper_tail=df$High[i]-df$Open[i]
+    lower_tail=df$Close[i]-df$Low[i]
+  }else{
+    upper_tail=df$High[i]-df$Open[i]
+    lower_tail=df$Open[i]-df$Low[i]
+  }
+  
+  #Hammers and Dragonflies
+  if(body<=lower_tail){
+    if(range>0)
+      {if(((body+lower_tail)/range)>=0.9){
+        if((body/range)<=0.1){
+        candle_type="Dragonfly Doji"
+      }else{
+        candle_type="Hammer"
+      }
+      }
+    }else{
+        candle_type="Doji"
+    }
+  }else if(body>(range*0.9)){
+    candle_type="Marubozu"
+  }else{
+    candle_type="Plain"
+  }
+  
+  #Shooting Stars and Gravestone Dojis
+  if(body<=upper_tail){
+    if(range>0){
+      if(((body+upper_tail)/range)>=0.9){
+        if((body/range)<=0.1){
+        candle_type="Gravestone Doji"
+      }else{
+        candle_type="Shooting Star"
+      }
+      }
+    }else{
+      candle_type="Doji"
+    }
+    }else if(body>(range*0.9)){
+    candle_type="Marubozu" 
+  }else{
+    candle_type="Plain"
+  }
+  if(range>0){
+    if((body/range)<=0.1){
+    if(candle_type=="Plain"){
+      candle_type="Doji"
+    }else{
+      candle_type=candle_type
+    }}else{
+      candle_type=candle_type
+    }}else{
+      candle_type="Doji"
+    }
+  candle_color_vector=c(candle_color_vector,color)
+  candle_type_vector=c(candle_type_vector,candle_type)
+  }
+  result=data.frame(candle_color_vector,candle_type_vector)
+  names(result)=c("previous_color","previous_candle_type")
+  return(result)
+}
+
+#Create function to determine if there was range contraction in the previous trading sessions.
+inside_candle_function=function(df){
+  pattern_vector=NA
+  if(df$High[2]<=df$High[1]&&df$Low[2]>=df$Low[1]){
+    pattern_vector=c(pattern_vector,"Inside Day")
+  }else{
+    pattern_vector=c(pattern_vector,"None")
+  }
+  if(df$High[3]<=df$High[2]&&df$Low[3]>=df$Low[2]){
+    if(df$High[2]<=df$High[1]&&df$Low[2]>=df$Low[1]){
+    pattern_vector=c(pattern_vector,"Daily Shooter")
+  }else{
+    pattern_vector=c(pattern_vector,"Inside Day")
+  }
+  }else{
+    pattern_vector=c(pattern_vector,"None")
+  }
+  if(df$High[4]<=df$High[3]&&df$Low[4]>df$Low[3]){
+    if(df$High[3]<=df$High[2]&&df$Low[3]>=df$Low[2]){
+    if(df$High[2]<=df$High[1]&&df$Low[2]>=df$Low[1]){
+    pattern_vector=c(pattern_vector,"Squirt")
+  }else{
+    pattern_vector=c(pattern_vector,"Daily Shooter")
+  }
+  }else{
+    pattern_vector=c(pattern_vector,"Inside Day")
+  }
+  }else{
+    pattern_vector=c(pattern_vector,"None")
+  }
+  for(j in 5:nrow(df)){
+    if(df$High[j]<=df$High[j-1]&&df$Low[j]>=df$Low[j-1]){
+      if(df$High[j-1]<=df$High[j-2]&&df$Low[j-1]>=df$Low[j-2]){
+        if(df$High[j-2]<=df$High[j-3]&&df$Low[j-2]>=df$Low[j-3]){
+          if(df$High[j-3]<=df$High[j-4]&&df$Low[j-3]>=df$Low[j-4]){
+            pattern="Super Squirt"
+          }else{
+            pattern="Squirt"}
+        }else{
+          pattern="Daily Shooter"}
+      }else{
+        pattern="Inside Day"}
+    }else{
+      pattern="None"
+      }
+    pattern_vector=c(pattern_vector,pattern)
+  }
+      pattern_vector=factor(pattern_vector)
+  return(pattern_vector)
+}
+
+```
+
+Finally, I put the technical indicator calculation functions together combined with my xts to df import function to create a comprehensive function that also adds columns measuring the technical indicators I've selected. This will make it easier for me to not only analyze my trades, but test ideas I haven't been able to execute in order to better define my personal trading rules.
+
+```{r Final Xts to Df function, echo=FALSE}
+#Let's create a trend classification function that also incorporates the xts_to_df function, therefore taking a time series of Yahoo Finance data from the quantmod package and convert it to trend classification.
+xts_trend_classification=function(symbol_name,round=0.5){
+  df=xts_to_df(symbol_name)
+  pivot_sr=pivot_sr_function(df,round)
+  ma_df=ma_df_function(df,short_sma_no,medium_sma_no,long_sma_no,short_ema_no,medium_ema_no,
+                       long_ema_no)
+  candle_shape_df=candle_shape_function(df)
+  inside_candle_vec=inside_candle_function(df)
+  gap_df=gap_function(df)
+  atr_vec=atr_function(df,atr_no)
+  volume_analysis_df=volume_analysis_function(df,vol_no)
+  short_rs=relative_strength(df,market_df,short_rs_no)
+  medium_rs=relative_strength(df,market_df,medium_rs_no)
+  long_rs=relative_strength(df,market_df,long_rs_no)
+  gap_rs=gap_relative_strength(df,market_df)
+  beta_vec=beta_function(df,market_df,beta_no)
+  result_df=trend_classification_function(df)
+  result_df=cbind(result_df,pivot_sr[,2:3],ma_df[,2:ncol(ma_df)],atr_vec,volume_analysis_df,candle_shape_df,inside_candle_vec,gap_df,short_rs,medium_rs,long_rs,gap_rs,beta_vec)
+  colnames(result_df)=c("Symbol","Date","Open","High","Low","Close","Volume","Previous_Open","Previous_High","Previous_Low","Previous_Close","Previous_Volume","Daily_Return","Trend","Previous_Trend","Pivot_Support","Pivot_Resistance","Short_SMA","Medium_SMA","Long_SMA","Short_EMA","Medium_EMA","Long_EMA","Lower_BBand","Middle_BBand","Higher_BBand","Short_SMA_Extension","Medium_SMA_Extension","Long_SMA_Extension","Short_EMA_Extension","Medium_EMA_Extension","Long_EMA_Extension","ATR","Avg_Vol","Rvol","Previous_Color","Previous_Candle","Range_Contraction","Gap_Type","Gap_Direction","Gap_Size","Short_RS","Medium_RS","Long_RS","Gap_RS","Beta")
+  return(result_df)
+}
+
+```
+
+Now let's put it all together and create data frames for every stock I've ever traded in my career. I created a loop that does this for each stock I've traded and combine them all into one large dataset known as the traded_stock data frame. I also removed recent IPOs (names I've traded within the first few months the stock was public) from the traded stock and master trades data frame since they may not have the necessary moving averages or other indicators.
+
+```{r Create the Traded Stock Dataframe, echo=FALSE, message=FALSE, warning=FALSE}
+traded_symbol_df$Symbol=as.character(traded_symbol_df$Symbol)
+
+#Full Traded Stock Data Frame with all of the technical indicators.
+traded_stock_df=data.frame() 
+start_time=Sys.time()
+for(i in 1:nrow(traded_symbol_df)){
+  df=xts_trend_classification(traded_symbol_df$Symbol[i])
+  traded_stock_df=rbind(traded_stock_df,df)
+}
+end_time=Sys.time()
+full_execution_time=as.numeric(difftime(end_time,start_time,units="secs"))
+full_execution_time=round(full_execution_time,2)
+
+#Clean up data frames and adjust for IPOs.
+traded_stock_df$Symbol=as.factor(traded_stock_df$Symbol)
+traded_stock_df=traded_stock_df[order(traded_stock_df$Symbol,traded_stock_df$Date),]
+traded_stock_df_clean=na.omit(traded_stock_df)
+
+for(i in 1:length(unimportable_symbols)){
+  master_trades_clean=master_trades_clean[master_trades_clean$Symbol!=unimportable_symbols[i],]
+  traded_stock_df_clean=traded_stock_df_clean[traded_stock_df_clean$Symbol!=unimportable_symbols[i],]
+  traded_symbols_clean=traded_symbols_clean[traded_symbols_clean!=unimportable_symbols[i]]
+}
+
+```
+Creating the dataframe: traded_stock_df, took **`r full_execution_time` seconds** to execute.  
+
+&nbsp;
+
+Now it's time to make sure we only look at trades within the pre-determined lookback period. I created an indicators data frame that matches each individual trade I've taken throughout my career with every possible technical indicator I wish to study. I'll also calculate whether my trades against or with the daily trend of an underlying security if there is a defined trend, or if my trades were in securities with no discernible trend/challenged trend.
+
+```{r Trades Subset Data Frame and Trade Trend Function, echo=FALSE}
+#Only lookback at cleaned data specified by pre-determined lookback period
+trades=subset(master_trades_clean,master_trades_clean$entry_date>=career_start_date)
+
+#Let's add the appropriate indicators from the traded stock data frame to the trades data frame.
+trades$Symbol=as.character(trades$Symbol)
+traded_stock_df_clean$Symbol=as.factor(traded_stock_df_clean$Symbol)
+indicators_df=data.frame()
+for(i in 1:nrow(trades)){
+  symbol_df=subset(traded_stock_df_clean,traded_stock_df_clean$Symbol==trades$Symbol[i])
+  date_index=which(symbol_df$Date==trades$entry_date[i])
+  row=symbol_df[date_index,c(1,2,14:ncol(symbol_df))]
+  indicators_df=rbind(indicators_df,row)
+}
+
+#Make sure you only include trades that match the indicators data frame based on entry date and Symbol. The duplicated function is required to remove duplicates caused by Symbols traded more than once in a given day
+trades_final=data.frame()
+for(i in 1:nrow(indicators_df)){
+  row=(trades[trades$entry_date==indicators_df$Date[i]&trades$Symbol==indicators_df$Symbol[i],])
+  if(nrow(row)<1){
+    row=row
+  }else{
+    row=cbind(row,indicators_df[i,3:ncol(indicators_df)])
+  }
+  trades_final=rbind(trades_final,row)
+}
+trades_final=trades_final[duplicated(trades_final$trade_id)==FALSE,]
+
+
+#Determine the relation of the trade type with the stock's daily chart trend.
+trade_trend_vec=c()
+for(i in 1:nrow(trades_final)){
+  if(trades_final$Type[i]=="Long"){
+    if(trades_final$Previous_Trend[i]=="Up"){
+      trade_trend="With"
+    }else if(trades_final$Previous_Trend[i]=="Down"){
+      trade_trend="Counter"
+    }else{
+      trade_trend="Range"
+    }
+  }else{
+    if(trades_final$Previous_Trend[i]=="Up"){
+      trade_trend="Counter"
+    }else if(trades_final$Previous_Trend[i]=="Down"){
+      trade_trend="With"
+    }else{
+      trade_trend="Range"
+    }
+  }
+  trade_trend_vec=c(trade_trend_vec,trade_trend)
+}
+trade_trend=trade_trend_vec
+trades_final=cbind(trades_final,trade_trend)
+
+#Make Sure Net Profits and Gross Profits are on the LAST TWO COLUMNS to make it easier to test which variables are the most important.
+trades_final=data.frame(trades_final[,c(1:(which(colnames(trades_final)=="Gross")-1))],trading_fees=trades_final[,(which(colnames(trades_final)=="Gross")+1)],trades_final[,c((which(colnames(trades_final)=="Net")+1):ncol(trades_final))],Gross=trades_final[,which(colnames(trades_final)=="Gross")])
+
+trades_final=data.frame(trades_final,Net=trades_final$Gross-trades_final$trading_fees)
+
+#Add two more columns for if the Trade was Gross Profitable and Net Profitable respectively.
+gross_win_vec=c()
+net_win_vec=c()
+
+for(i in 1:nrow(trades_final)){
+  if(trades_final$Gross[i]>=0){
+    gross_win=TRUE
+  }else{
+    gross_win=FALSE
+  }
+  
+  if(trades_final$Net[i]>=0){
+    net_win=TRUE
+  }else{
+    net_win=FALSE
+  }
+  gross_win_vec=c(gross_win_vec,gross_win)
+  net_win_vec=c(net_win_vec,net_win)
+}
+
+trades_final=data.frame(trades_final,gross_win=gross_win_vec,net_win=net_win_vec)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r Final Chunk, echo=FALSE, message=FALSE, warning=FALSE}
+notebook_end_time=Sys.time()
+notebook_execution_time=difftime(notebook_end_time,notebook_start_time,units="mins")
+notebook_execution_time=round(as.numeric(notebook_execution_time),2)
+```
+
+This file took **`r notebook_execution_time` minutes** to execute, with **`r install_execution_time` seconds to install previously unloaded packages**
